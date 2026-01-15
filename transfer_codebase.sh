@@ -8,7 +8,7 @@
 # ======================================================================================
 
 # Local Directory to sync (本地项目路径)
-LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$HOME/server/}"
+LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$HOME/framework/server/}"
 
 # Remote Directory to sync to (远端存放路径)
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/data/nvme_data/rec_ws/server/}"
@@ -17,7 +17,7 @@ REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/data/nvme_data/rec_ws/server/}"
 LOCAL_TMP_DIR="${LOCAL_TMP_DIR:-$HOME/Public/}"
 
 # SSH Key Configuration (SSH密钥配置)
-SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_ed25519}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa.pub}"
 
 # ======================================================================================
 
