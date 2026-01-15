@@ -1,12 +1,12 @@
 [submodule "drone_racer"]
 	path = drone_racer
-	url = https://github.com/WarriorHanamy/drone_racer.git
+	url = git@github.com:WarriorHanamy/drone_racer.git
 	branch = rec/meshes
 [submodule "IsaacLab"]
 	path = IsaacLab
-	url = https://github.com/WarriorHanamy/IsaacLab.git
+	url = git@github.com:WarriorHanamy/IsaacLab.git
 	branch = main
 [submodule "rsl_rl"]
 	path = rsl_rl
-	url = https://github.com/WarriorHanamy/rsl_rl.git
+	url = git@github.com:WarriorHanamy/rsl_rl.git
 	branch = main
