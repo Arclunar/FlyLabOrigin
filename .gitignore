@@ -81,3 +81,6 @@ datasets
 
 .vscode/
 .zed/
+
+# shared folder
+shared/

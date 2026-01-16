@@ -101,8 +101,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
     ros-jazzy-rmw-cyclonedds-cpp \
     ros-jazzy-rmw-fastrtps-cpp \
     ros-jazzy-plotjuggler-ros \
-    ros-dev-tools && \
-    echo "source /opt/ros/jazzy/setup.bash" >> ${DOCKER_USER_HOME}/.bashrc
+    ros-dev-tools
+    # echo "source /opt/ros/jazzy/setup.bash" >> ${DOCKER_USER_HOME}/.bashrc
 
 RUN mkdir -p ${DOCKER_USER_HOME}/.ros && \
     cp -r ${ISAACLAB_PATH}/docker/.ros/. ${DOCKER_USER_HOME}/.ros/ || true

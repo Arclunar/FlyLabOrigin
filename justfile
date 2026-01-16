@@ -8,7 +8,7 @@ elogs:
     echo "SERVER_LOGS_DIR: {{SERVER_LOGS_DIR}}"
 
 build-sim:
-    docker build -f docker/isaacsim5.dockerfile \
+    docker build -f docker/isaacsim5_ros2.dockerfile \
     --network=host \
     -t {{env_var("USER")}}-lab2.3-sim5.1:{{TAG_NAME}} .
 
@@ -47,7 +47,7 @@ start:
     docker restart {{env_var("USER")}}-lab2.3-sim5.1:{{TAG_NAME}}
 
 build-sim-local:
-    docker build -f docker/isaacsim5.dockerfile \
+    docker build -f docker/isaacsim5_ros2.dockerfile \
     --network=host \
     -t isaacsim5:latest .
 
@@ -74,6 +74,7 @@ run-sim-local:
     -v {{justfile_directory()}}/drone_racer:/workspace/drone_racer \
     -v {{SERVER_LOGS_DIR}}:/root/server_logs:rw \
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
+    -v {{justfile_directory()}}/shared:/workspace/drone_racer/shared:rw \
     -w /workspace/drone_racer \
     isaacsim5:latest
 
