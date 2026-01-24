@@ -89,4 +89,30 @@ just tb-local-tunnel 8008 7007 $SERVER_IP
 # 然后在浏览器访问 http://localhost:8008
 ```
 
+### 2026-01-24 15:39 支持识别已commit的变化
+
+**问题**: 本地commit后，`just up` 识别不到commit的内容，只能同步未commit的工作区变化。
+
+**修复**: 
+1. 在创建patch前，先查询远端各仓库的HEAD commit
+2. 对比本地HEAD与远端HEAD的差异
+3. 如果本地领先，使用 `git bundle` 传输commits而非patch
+4. Bundle 传输后，远端 `reset --hard` 到和本地相同的commit
+5. 如果还有未commit的工作区变化，额外传patch
+6. 在 bundle 应用和 reset 过程中禁用 Git LFS（`GIT_LFS_SKIP_SMUDGE=1`）避免凭据问题
+
+**效果**:
+- ✅ 能识别并同步已commit的变化
+- ✅ 远端和本地的commit id完全一致
+- ✅ 能识别并同步未commit的工作区变化
+- ✅ 两者都有时，都会被同步
+- ✅ 清晰显示patch包含的内容类型（committed / uncommitted / both）
+- ✅ 无需在远端创建新commit，保持commit历史一致
+
+**实现细节**:
+- 使用 `git bundle create "remote_head..HEAD"` 创建增量 bundle
+- 同时创建 `.head` 文件记录目标 commit hash
+- 远端 fetch bundle 后 reset 到 `.head` 指定的 commit
+- 所有 git 操作前设置 `GIT_LFS_SKIP_SMUDGE=1` 避免 LFS 触发下载
+
 ---
