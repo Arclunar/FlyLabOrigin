@@ -1,35 +1,30 @@
 #!/usr/bin/env bash
 #
-# Creates a git diff patch from current workspace and deploys it to a remote server.
+# Syncs local changes (including submodules) to remote server using git diff.
+# Handles new files, deleted files, and modifications in both main repo and submodules.
 #
 # ======================================================================================
-# CONFIGURATION (Environment Variables)
+# CONFIGURATION
 # ======================================================================================
 
-# Local Project Directory (本地项目路径)
-# Default: $HOME/server/
-LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$HOME/server/}"
+# Remote Server Configuration
+SERVER_IP="${SERVER_IP:-14.103.52.172}"
+REMOTE_USER="${REMOTE_USER:-zhw}"
 
-# Remote Project Directory (远端项目路径)
-# Default: $HOME/server/
-REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/data/nvme_data/rec_ws/server/}"
+# Local Project Directory
+LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$HOME/framework/server/}"
 
-# Commit hash to compare against (对比的提交哈希)
-# Default: HEAD (compares current workspace with last commit)
-COMMIT_HASH="${COMMIT_HASH:-HEAD}"
+# Remote Project Directory (注意：远端用户是 zhw，不是本地用户)
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/zhw/framework/server/}"
 
-# Local temporary directory root (本地临时目录)
-# Default: $TMPDIR or /tmp/
+# SSH Key Configuration
+SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa.pub}"
+
+# Local temporary directory
 LOCAL_TMP_DIR="${LOCAL_TMP_DIR:-${TMPDIR:-/tmp/}}"
 
-# SSH Key Configuration (SSH密钥配置)
-# Default: ~/.ssh/id_ed25519
-SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_ed25519}"
-
-# Auto-commit on remote after applying patch (远端自动提交)
-# Default: false (changes remain in working directory for manual review)
-# Set to "true" to automatically commit after applying patch
-AUTO_COMMIT_REMOTE="${AUTO_COMMIT_REMOTE:-false}"
+# Construct target server
+TARGET_SERVER="${REMOTE_USER}@${SERVER_IP}"
 
 # ======================================================================================
 
@@ -48,253 +43,246 @@ COLOR_RESET='\033[0m'
 # Logging Functions
 # ======================================================================================
 
-# Standard info log (blue)
 log() {
   printf "${COLOR_BLUE}[%s]${COLOR_RESET} %s\n" "$(date '+%H:%M:%S')" "$*"
 }
 
-# Success log (green)
 log_success() {
   printf "${COLOR_GREEN}[%s] ✓ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
 }
 
-# Error log (red)
 log_error() {
   printf "${COLOR_RED}[%s] ✗ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*" >&2
 }
 
-# Warning log (yellow)
 log_warning() {
   printf "${COLOR_YELLOW}[%s] ⚠ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
 }
 
 # ======================================================================================
+# Helper Functions
+# ======================================================================================
 
-if [ "$#" -lt 1 ]; then
-  echo "Usage: $(basename "$0") <target-server> [commit-hash]"
-  echo ""
-  echo "Examples:"
-  echo "  $(basename "$0") rec-server              # Deploy workspace diff vs HEAD"
-  echo "  $(basename "$0") rec-server d21f153      # Deploy workspace diff vs specific commit"
-  echo ""
-  echo "Environment Variables:"
-  echo "  LOCAL_PROJECT_DIR    Local project path (default: \$HOME/server/)"
-  echo "  REMOTE_PROJECT_DIR   Remote project path (default: /data/nvme_data/rec_ws/server/)"
-  echo "  COMMIT_HASH          Commit to compare against (default: HEAD)"
-  echo "  LOCAL_TMP_DIR        Local temp directory (default: \$TMPDIR or /tmp/)"
-  echo "  SSH_KEY_PATH         SSH key path (default: ~/.ssh/id_ed25519)"
-  echo "  AUTO_COMMIT_REMOTE   Auto-commit on remote after apply (default: false)"
-  exit 1
-fi
+# Create a git diff patch for a directory (handles new/deleted files)
+# Args: $1 = directory path, $2 = patch output path, $3 = name for logging, $4 = lfs files list output
+create_patch_for_repo() {
+  local repo_dir="$1"
+  local patch_path="$2"
+  local repo_name="$3"
+  local lfs_list_path="$4"
+  
+  cd "$repo_dir"
+  
+  # Check if it's a git repo
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    log_warning "$repo_name is not a git repository, skipping"
+    return 1
+  fi
+  
+  # Check if there are any changes (tracked or untracked)
+  local has_changes=false
+  
+  # Check for modified/deleted tracked files
+  if ! git diff --quiet HEAD 2>/dev/null; then
+    has_changes=true
+  fi
+  
+  # Check for staged changes
+  if ! git diff --cached --quiet 2>/dev/null; then
+    has_changes=true
+  fi
+  
+  # Check for untracked files
+  if [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    has_changes=true
+  fi
+  
+  if [ "$has_changes" = false ]; then
+    log "  $repo_name: No changes"
+    return 1
+  fi
+  
+  # Save current staged state
+  local stash_needed=false
+  if ! git diff --cached --quiet 2>/dev/null; then
+    stash_needed=true
+    git stash push --staged -m "transfer_temp_stash" >/dev/null 2>&1 || true
+  fi
+  
+  # Stage ALL changes including new files and deletions
+  git add -A
+  
+  # Collect LFS tracked files that are new or modified
+  if command -v git-lfs >/dev/null 2>&1; then
+    git diff --cached --name-only --diff-filter=AM HEAD 2>/dev/null | while read -r file; do
+      if [ -f "$file" ] && git check-attr filter "$file" 2>/dev/null | grep -q "filter: lfs"; then
+        echo "$file" >> "$lfs_list_path"
+      fi
+    done
+  fi
+  
+  # Create the patch with --cached --binary to include everything
+  git diff --cached --binary HEAD > "$patch_path"
+  
+  # Restore staging area
+  git reset HEAD >/dev/null 2>&1 || true
+  
+  # Restore previously staged changes
+  if [ "$stash_needed" = true ]; then
+    git stash pop >/dev/null 2>&1 || true
+  fi
+  
+  # Check if patch has content
+  if [ ! -s "$patch_path" ]; then
+    return 1
+  fi
+  
+  local patch_size
+  patch_size="$(du -h "$patch_path" | cut -f1)"
+  log "  $repo_name: Patch created (${patch_size})"
+  
+  # Show summary
+  git add -A
+  git diff --cached --stat HEAD 2>/dev/null | head -20 | sed 's/^/      /'
+  git reset HEAD >/dev/null 2>&1 || true
+  
+  return 0
+}
 
-TARGET_SERVER="$1"
-
-# Allow overriding commit hash via second argument
-if [ -n "${2:-}" ]; then
-  COMMIT_HASH="$2"
-fi
-
-# Validate target server
-case "$TARGET_SERVER" in
-  rec-server)
-    ;;
-  wu)
-    ;;
-  ali)
-    ;;
-  *)
-    echo "Error: Unsupported target server: $TARGET_SERVER" >&2
-    echo "Supported servers: rec-server, wu, ali" >&2
-    exit 1
-    ;;
-esac
+# ======================================================================================
+# Main Script
+# ======================================================================================
 
 # Check if local directory exists
 if [ ! -d "$LOCAL_PROJECT_DIR" ]; then
-  echo "Error: Local directory not found: $LOCAL_PROJECT_DIR" >&2
+  log_error "Local directory not found: $LOCAL_PROJECT_DIR"
   exit 1
 fi
 
-# Check prerequisites (git, ssh, scp)
+# Check prerequisites
 for cmd in git ssh scp; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Error: Command '$cmd' is required but not found in PATH." >&2
+    log_error "Command '$cmd' is required but not found in PATH."
     exit 1
   fi
 done
 
-# Check if we're in a git repository
 cd "$LOCAL_PROJECT_DIR"
+
+# Verify it's a git repository
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   log_error "Not a git repository: $LOCAL_PROJECT_DIR"
   exit 1
 fi
 
 # ======================================================================================
-# Helper Functions
+# Generate Patches
 # ======================================================================================
 
-# Retrieve remote server's HEAD commit hash
-get_remote_head_hash() {
-  local server="$1"
-  local remote_dir="$2"
-  local ssh_key="$3"
-
-  log "Querying remote server's HEAD commit..." >&2
-
-  local remote_head
-  remote_head="$(ssh -i "$ssh_key" -o ConnectTimeout=10 -o BatchMode=yes "$server" \
-    "cd '$remote_dir' 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo 'UNAVAILABLE'")"
-
-  if [ "$remote_head" = "UNAVAILABLE" ] || [ -z "$remote_head" ]; then
-    log_warning "Could not retrieve remote HEAD from $server" >&2
-    log_warning "Possible causes:" >&2
-    log_warning "  - Remote server unreachable" >&2
-    log_warning "  - Remote directory not a git repository" >&2
-    log_warning "  - SSH authentication failed" >&2
-    return 1
-  fi
-
-  log_success "Remote HEAD: $remote_head" >&2
-  echo "$remote_head"
-  return 0
-}
-
-# Check if a commit exists in local git history
-commit_exists_in_local() {
-  local commit_hash="$1"
-
-  # Method 1: Check with git cat-file (most reliable)
-  if git cat-file -e "${commit_hash}^{commit}" 2>/dev/null; then
-    return 0
-  fi
-
-  # Method 2: Check with git rev-parse
-  if git rev-parse --verify "${commit_hash}^{commit}" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  # Method 3: Check if commit exists in any branch history
-  if git branch -a --contains "$commit_hash" 2>/dev/null | grep -q .; then
-    return 0
-  fi
-
-  # Debug: show why check failed
-  log "Debug: commit check failed for ${commit_hash:0:8}" >&2
-  git rev-parse --verify "${commit_hash}^{commit}" 2>&1 | head -1 | sed 's/^/  /' >&2 || true
-
-  return 1
-}
-
-# ======================================================================================
-
-# Generate patch filename
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
-PATCH_NAME="changes_${TARGET_SERVER}_${TIMESTAMP}.patch"
-# Ensure LOCAL_TMP_DIR ends with slash
 LOCAL_TMP_DIR="${LOCAL_TMP_DIR%/}/"
-LOCAL_PATCH_PATH="${LOCAL_TMP_DIR}${PATCH_NAME}"
-REMOTE_PATCH_PATH="$(dirname "${REMOTE_PROJECT_DIR%/}")/${PATCH_NAME}"
+PATCH_DIR="${LOCAL_TMP_DIR}patches_${TIMESTAMP}"
+mkdir -p "$PATCH_DIR"
 
-# ======================================================================================
-# Determine Comparison Baseline
-# ======================================================================================
-log "Determining comparison baseline..."
-
-# Variable to store remote HEAD for display
-REMOTE_HEAD_BEFORE=""
-
-# Priority 1: Explicitly provided COMMIT_HASH (env var or argument)
-if [ "${COMMIT_HASH:-HEAD}" != "HEAD" ]; then
-  BASELINE_COMMIT="$COMMIT_HASH"
-  log "Using explicit commit: ${BASELINE_COMMIT}"
-
-  # Verify it exists
-  if ! git rev-parse --verify "${BASELINE_COMMIT}^{commit}" >/dev/null 2>&1; then
-    log_error "Specified commit not found: ${BASELINE_COMMIT}"
-    exit 1
-  fi
-  log_success "Baseline commit validated"
-
-  # Try to get remote HEAD anyway for display
-  REMOTE_HEAD_BEFORE="$(get_remote_head_hash "$TARGET_SERVER" "${REMOTE_PROJECT_DIR%/}" "$SSH_KEY_PATH" 2>/dev/null)" || true
-
-# Priority 2: Try to retrieve remote HEAD automatically
-else
-  REMOTE_HEAD=""
-  if REMOTE_HEAD="$(get_remote_head_hash "$TARGET_SERVER" "${REMOTE_PROJECT_DIR%/}" "$SSH_KEY_PATH")"; then
-    REMOTE_HEAD_BEFORE="$REMOTE_HEAD"
-    # Check if remote HEAD exists in local history
-    if commit_exists_in_local "$REMOTE_HEAD"; then
-      BASELINE_COMMIT="$REMOTE_HEAD"
-      log_success "Using remote HEAD as baseline: ${BASELINE_COMMIT}"
-    else
-      log_warning "Remote HEAD ($REMOTE_HEAD) not found in local history"
-      log_warning "This suggests local and remote repos have diverged"
-      log_warning "Falling back to local HEAD"
-      BASELINE_COMMIT="HEAD"
-      log "Using local HEAD as baseline"
-    fi
-  else
-    # Remote HEAD retrieval failed, use local HEAD with warning
-    log_warning "Could not retrieve remote HEAD, using local HEAD"
-    BASELINE_COMMIT="HEAD"
-    log "Using local HEAD as baseline: ${BASELINE_COMMIT}"
-  fi
-fi
-
+log ""
+log "=========================================="
+log "Transfer Codebase by Git Diff"
+log "=========================================="
 log ""
 log "Configuration:"
-log "  Local Path:        ${LOCAL_PROJECT_DIR}"
-log "  Remote Path:       ${REMOTE_PROJECT_DIR}"
-log "  Target Server:     ${TARGET_SERVER}"
-log "  Baseline Commit:   ${BASELINE_COMMIT}"
-if [ -n "$REMOTE_HEAD_BEFORE" ]; then
-  log "  Remote HEAD Before: ${REMOTE_HEAD_BEFORE}"
-fi
-log "  Patch File:        ${PATCH_NAME}"
-log "  SSH Key Path:      ${SSH_KEY_PATH}"
+log "  Local Path:      ${LOCAL_PROJECT_DIR}"
+log "  Remote Path:     ${REMOTE_PROJECT_DIR}"
+log "  Target Server:   ${TARGET_SERVER}"
+log "  SSH Key:         ${SSH_KEY_PATH}"
 log ""
 
-# ======================================================================================
+# --- 1. Collect patches from main repo and submodules ---
+log "1. Creating patches..."
 
-# --- 1. Create Git Diff Patch ---
-log "1. Creating git diff patch: ${LOCAL_PROJECT_DIR} vs ${BASELINE_COMMIT}..."
+PATCHES_CREATED=()
+LFS_FILES_TO_TRANSFER=()
 
-# Check if there are any changes
-if git diff --quiet "${BASELINE_COMMIT}" 2>/dev/null; then
-  log_error "No changes detected between workspace and commit ${BASELINE_COMMIT}"
-  exit 1
+# Main repository
+MAIN_PATCH="${PATCH_DIR}/main.patch"
+MAIN_LFS_LIST="${PATCH_DIR}/main_lfs.txt"
+if create_patch_for_repo "$LOCAL_PROJECT_DIR" "$MAIN_PATCH" "main repo" "$MAIN_LFS_LIST"; then
+  PATCHES_CREATED+=("main:$MAIN_PATCH:.")
+  if [ -f "$MAIN_LFS_LIST" ]; then
+    while IFS= read -r lfs_file; do
+      [ -n "$lfs_file" ] && LFS_FILES_TO_TRANSFER+=("./${lfs_file}:${LOCAL_PROJECT_DIR}")
+    done < "$MAIN_LFS_LIST"
+  fi
 fi
 
-# Create the patch
-git diff "${BASELINE_COMMIT}" > "$LOCAL_PATCH_PATH"
+# Get list of submodules
+cd "$LOCAL_PROJECT_DIR"
+SUBMODULES=$(git submodule --quiet foreach 'echo $name:$sm_path' 2>/dev/null || true)
 
-# Verify patch was created and is not empty
-if [ ! -s "$LOCAL_PATCH_PATH" ]; then
-  log_error "Failed to create patch or patch is empty"
-  exit 1
+for submod in $SUBMODULES; do
+  submod_name="${submod%%:*}"
+  submod_path="${submod#*:}"
+  submod_full_path="${LOCAL_PROJECT_DIR%/}/${submod_path}"
+  submod_patch="${PATCH_DIR}/${submod_name}.patch"
+  submod_lfs_list="${PATCH_DIR}/${submod_name}_lfs.txt"
+  
+  if [ -d "$submod_full_path" ]; then
+    if create_patch_for_repo "$submod_full_path" "$submod_patch" "$submod_name" "$submod_lfs_list"; then
+      PATCHES_CREATED+=("${submod_name}:${submod_patch}:${submod_path}")
+      if [ -f "$submod_lfs_list" ]; then
+        while IFS= read -r lfs_file; do
+          [ -n "$lfs_file" ] && LFS_FILES_TO_TRANSFER+=("${submod_path}/${lfs_file}:${submod_full_path}")
+        done < "$submod_lfs_list"
+      fi
+    fi
+  fi
+done
+
+# Check if any patches were created
+if [ ${#PATCHES_CREATED[@]} -eq 0 ]; then
+  log_warning "No changes detected in any repository"
+  rm -rf "$PATCH_DIR"
+  exit 0
 fi
 
-PATCH_SIZE="$(du -h "$LOCAL_PATCH_PATH" | cut -f1)"
-log_success "Patch created successfully (${PATCH_SIZE}): ${LOCAL_PATCH_PATH}"
+log_success "Created ${#PATCHES_CREATED[@]} patch(es)"
 
-# Show summary of changes
-log "Summary of changes:"
-git diff --stat "${BASELINE_COMMIT}" | sed 's/^/      /'
+# --- 2. Upload patches to remote server ---
+log ""
+log "2. Uploading patches to remote server..."
 
-# --- 2. Upload Patch to Remote Server ---
-log "2. Uploading patch to ${TARGET_SERVER}:${REMOTE_PATCH_PATH}..."
-scp -i "$SSH_KEY_PATH" "$LOCAL_PATCH_PATH" "${TARGET_SERVER}:${REMOTE_PATCH_PATH}"
-log_success "Patch uploaded successfully"
+REMOTE_PATCH_DIR="/tmp/patches_${TIMESTAMP}"
+ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" "mkdir -p '$REMOTE_PATCH_DIR'"
 
-# --- 3. Apply Patch on Remote Server ---
-log "3. Applying patch on remote server..."
-REMOTE_OUTPUT="$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
-  "PATCH_FILE='${PATCH_NAME}' \
-   REMOTE_PROJECT_DIR='${REMOTE_PROJECT_DIR}' \
-   PATCH_PATH='${REMOTE_PATCH_PATH}' \
-   AUTO_COMMIT_REMOTE='${AUTO_COMMIT_REMOTE}' \
+for patch_info in "${PATCHES_CREATED[@]}"; do
+  patch_name="${patch_info%%:*}"
+  rest="${patch_info#*:}"
+  patch_path="${rest%%:*}"
+  
+  scp -i "$SSH_KEY_PATH" "$patch_path" "${TARGET_SERVER}:${REMOTE_PATCH_DIR}/" >/dev/null
+  log "  Uploaded: ${patch_name}.patch"
+done
+
+log_success "All patches uploaded"
+
+# --- 3. Apply patches on remote server ---
+log ""
+log "3. Applying patches on remote server..."
+
+# Build the patches info for remote script
+PATCHES_INFO=""
+for patch_info in "${PATCHES_CREATED[@]}"; do
+  patch_name="${patch_info%%:*}"
+  rest="${patch_info#*:}"
+  patch_path="${rest%%:*}"
+  relative_path="${rest#*:}"
+  patch_filename="$(basename "$patch_path")"
+  PATCHES_INFO="${PATCHES_INFO}${patch_name}:${patch_filename}:${relative_path}\n"
+done
+
+REMOTE_OUTPUT=$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
+  "REMOTE_PROJECT_DIR='${REMOTE_PROJECT_DIR}' \
+   REMOTE_PATCH_DIR='${REMOTE_PATCH_DIR}' \
+   PATCHES_INFO='${PATCHES_INFO}' \
    COLOR_GREEN='\033[0;32m' \
    COLOR_RED='\033[0;31m' \
    COLOR_YELLOW='\033[0;33m' \
@@ -303,143 +291,114 @@ REMOTE_OUTPUT="$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
    bash -s" <<'EOF'
 set -uo pipefail
 
-log() {
-  printf "${COLOR_BLUE}[%s]${COLOR_RESET} %s\n" "$(date '+%H:%M:%S')" "$*"
-}
+log() { printf "${COLOR_BLUE}[%s]${COLOR_RESET} %s\n" "$(date '+%H:%M:%S')" "$*"; }
+log_success() { printf "${COLOR_GREEN}[%s] ✓ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"; }
+log_error() { printf "${COLOR_RED}[%s] ✗ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"; }
+log_warning() { printf "${COLOR_YELLOW}[%s] ⚠ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"; }
 
-log_success() {
-  printf "${COLOR_GREEN}[%s] ✓ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
-}
+cd "${REMOTE_PROJECT_DIR%/}" || { log_error "Failed to cd to: ${REMOTE_PROJECT_DIR}"; exit 1; }
 
-log_error() {
-  printf "${COLOR_RED}[%s] ✗ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
-}
-
-log_warning() {
-  printf "${COLOR_YELLOW}[%s] ⚠ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
-}
-
-# Navigate to remote project directory
-cd "${REMOTE_PROJECT_DIR%/}" || {
-  log_error "Failed to cd to: ${REMOTE_PROJECT_DIR}"
-  exit 1
-}
-
-# Verify we're in a git repository
-if ! git rev-parse --git-dir >/dev/null 2>&1; then
-  log_error "Remote directory is not a git repository: ${REMOTE_PROJECT_DIR}"
-  exit 1
-fi
-
-# Check git status - if uncommitted changes exist, reset them (server should not be modified directly)
-if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-  log_warning "Remote working directory has uncommitted changes"
-  log "Resetting remote workspace (git reset --hard)..."
-  git reset --hard HEAD
-  log_success "Remote workspace reset to clean state"
-fi
-
-# Apply the patch
-log "Applying patch with git apply..."
-APPLY_OUTPUT="$(git apply --check "$PATCH_PATH" 2>&1)" || true
-APPLY_EXIT=$?
-
-if [ $APPLY_EXIT -eq 0 ]; then
-  git apply "$PATCH_PATH"
-  log_success "Patch applied successfully"
-
-  # Show what changed
-  log "Summary of applied changes:"
-  git diff --stat | sed 's/^/    /'
-
-  # Auto-commit if requested
-  if [ "$AUTO_COMMIT_REMOTE" = "true" ]; then
-    log "Auto-committing changes on remote..."
-    # Add all changes including new files
-    git add -A
-    git commit -m "Deployed from local via transfer_codebase_by_git_diff.sh"
-    log_success "Changes committed on remote"
+# Process each patch
+echo -e "$PATCHES_INFO" | while IFS=: read -r patch_name patch_file relative_path; do
+  [ -z "$patch_name" ] && continue
+  
+  patch_full_path="${REMOTE_PATCH_DIR}/${patch_file}"
+  target_dir="${REMOTE_PROJECT_DIR%/}/${relative_path}"
+  
+  if [ ! -f "$patch_full_path" ]; then
+    log_error "Patch file not found: $patch_full_path"
+    continue
   fi
-else
-  log_error "Patch does not apply cleanly to remote repository"
-  log ""
-  log "git apply --check output:"
-  printf '%s\n' "$APPLY_OUTPUT" | sed 's/^/    /'
-  exit 1
-fi
+  
+  cd "$target_dir" || { log_error "Cannot cd to: $target_dir"; continue; }
+  
+  # Check if git repo
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    log_error "$patch_name: Not a git repository"
+    continue
+  fi
+  
+  # Reset any uncommitted changes on remote (remote should match git state)
+  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    log_warning "$patch_name: Resetting uncommitted changes..."
+    git reset --hard HEAD >/dev/null 2>&1
+  fi
+  
+  # Clean untracked files
+  git clean -fd >/dev/null 2>&1 || true
+  
+  # Temporarily disable Git LFS to avoid credential issues during patch apply
+  export GIT_LFS_SKIP_SMUDGE=1
+  
+  # Apply patch (with LFS disabled to avoid download issues)
+  if git apply --check "$patch_full_path" 2>/dev/null; then
+    git apply --binary "$patch_full_path" 2>&1 | head -20
+    log_success "$patch_name: Patch applied successfully"
+    git status --short 2>/dev/null | head -20 | sed 's/^/      /'
+  else
+    log_error "$patch_name: Patch failed to apply cleanly"
+    git apply --check "$patch_full_path" 2>&1 | head -10 | sed 's/^/      /'
+  fi
+  
+  # Re-enable LFS
+  unset GIT_LFS_SKIP_SMUDGE
+  
+  rm -f "$patch_full_path"
+done
 
-# Remove the patch file after successful application
-rm -f "$PATCH_PATH"
-log_success "Patch file removed: ${PATCH_PATH}"
-
+# Cleanup
+rm -rf "$REMOTE_PATCH_DIR"
+log_success "Cleanup completed"
 EOF
-)" || true
+) || true
 
-if [ -n "$REMOTE_OUTPUT" ]; then
-  printf '%s\n' "$REMOTE_OUTPUT"
-fi
+echo "$REMOTE_OUTPUT"
 
-# Check if SSH command succeeded
-if [ "${PIPESTATUS[0]}" -ne 0 ] 2>/dev/null || [ ! -s "$REMOTE_OUTPUT" ]; then
-  # Check if remote patch file still exists (indicates failure)
-  if ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" "test -f '$REMOTE_PATCH_PATH'" 2>/dev/null; then
-    log_warning "Remote patch application may have failed"
-    log "You can check manually on $TARGET_SERVER:"
-    log "  cd $REMOTE_PROJECT_DIR"
-    log "  git apply --check $REMOTE_PATCH_PATH"
-  fi
-fi
-
-# --- 4. Cleanup Local Patch ---
-log "4. Cleaning up local patch file..."
-rm -f "$LOCAL_PATCH_PATH"
-log_success "Removed local patch: ${LOCAL_PATCH_PATH}"
-
-# --- 5. Get Remote HEAD After Deployment ---
-log ""
-log "5. Verifying remote state..."
-
-# Get remote HEAD and verify it
-REMOTE_HEAD_AFTER=""
-REMOTE_HEAD_RAW="$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
-  "cd '${REMOTE_PROJECT_DIR%/}' 2>/dev/null && git rev-parse HEAD 2>&1")"
-
-# Check if we got a valid commit hash (40 character hex string)
-if echo "$REMOTE_HEAD_RAW" | grep -qE '^[a-f0-9]{40}$'; then
-  REMOTE_HEAD_AFTER="$REMOTE_HEAD_RAW"
-  log_success "Remote HEAD after deployment: ${REMOTE_HEAD_AFTER}"
-
-  # Compare with before (if we have it)
-  if [ -n "$REMOTE_HEAD_BEFORE" ]; then
-    if [ "$REMOTE_HEAD_BEFORE" = "$REMOTE_HEAD_AFTER" ]; then
-      log "Remote HEAD unchanged (expected with git apply - changes are in working directory only)"
-      log "Commit the changes on remote to update HEAD: cd ${REMOTE_PROJECT_DIR} && git commit -am 'Deployed from local'"
-    else
-      log_success "Remote HEAD changed: ${REMOTE_HEAD_BEFORE:0:8} -> ${REMOTE_HEAD_AFTER:0:8}"
+# --- 4. Transfer LFS files ---
+if [ ${#LFS_FILES_TO_TRANSFER[@]} -gt 0 ]; then
+  log ""
+  log "4. Transferring LFS files (${#LFS_FILES_TO_TRANSFER[@]} files)..."
+  
+  for lfs_info in "${LFS_FILES_TO_TRANSFER[@]}"; do
+    relative_path="${lfs_info%%:*}"
+    source_dir="${lfs_info#*:}"
+    local_file="${source_dir}/${relative_path#*/}"
+    remote_file="${REMOTE_PROJECT_DIR%/}/${relative_path}"
+    
+    if [ -f "$local_file" ]; then
+      # Check if it's actually a real file (not just LFS pointer)
+      if ! grep -q "version https://git-lfs.github.com" "$local_file" 2>/dev/null; then
+        log "  Transferring: ${relative_path}"
+        # Create remote directory if needed
+        remote_dir=$(dirname "$remote_file")
+        ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" "mkdir -p '$remote_dir'"
+        # Transfer the actual file
+        scp -i "$SSH_KEY_PATH" "$local_file" "${TARGET_SERVER}:${remote_file}" >/dev/null 2>&1
+      else
+        log_warning "  Skipping LFS pointer (not downloaded locally): ${relative_path}"
+      fi
     fi
-  fi
-else
-  log_error "Failed to get valid remote HEAD after deployment"
-  log_error "Got: $REMOTE_HEAD_RAW"
-  REMOTE_HEAD_AFTER=""
+  done
+  
+  log_success "LFS files transferred"
 fi
 
+# --- 5. Cleanup local patches ---
+log ""
+log "5. Cleaning up local patches..."
+rm -rf "$PATCH_DIR"
+log_success "Local cleanup completed"
+
+# --- Done ---
 log ""
 log_success "=========================================="
-log_success "Deployment completed successfully!"
+log_success "Deployment completed!"
 log_success "=========================================="
-log ""
-log "Summary:"
-if [ -n "$REMOTE_HEAD_BEFORE" ]; then
-  log "  Remote HEAD Before: ${REMOTE_HEAD_BEFORE}"
-fi
-if [ -n "$REMOTE_HEAD_AFTER" ]; then
-  log "  Remote HEAD After:  ${REMOTE_HEAD_AFTER}"
-fi
 log ""
 log "Changes have been applied to ${TARGET_SERVER}:${REMOTE_PROJECT_DIR}"
 log ""
-log "Next steps:"
-log "  1. SSH to remote: ssh ${TARGET_SERVER}"
-log "  2. Review changes: cd ${REMOTE_PROJECT_DIR} && git diff"
-log "  3. Commit: git commit -am 'Deployed from local'"
+log "To verify on remote:"
+log "  ssh ${TARGET_SERVER}"
+log "  cd ${REMOTE_PROJECT_DIR}"
+log "  git status"
+log "  git submodule foreach 'git status'"

@@ -94,3 +94,19 @@ alias b := build-sim
 alias r := run-sim
 alias e := exec-sim
 alias s := stop-sim
+
+# ======================================================================================
+# Remote Server Sync Commands
+# ======================================================================================
+
+# Upload local changes to remote server (uses git diff to sync)
+up:
+    ./transfer_codebase_by_git_diff.sh
+
+# Sync training logs from remote server to local
+sync-logs:
+    ./sync_server_logs.sh
+
+# Create SSH tunnel for tensorboard (local_port remote_port server_ip)
+tb-local-tunnel local_port remote_port server_ip:
+    ssh -N -L {{local_port}}:localhost:{{remote_port}} zhw@{{server_ip}}
