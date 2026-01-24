@@ -487,7 +487,7 @@ for patch_info in "${PATCHES_CREATED[@]}"; do
   PATCHES_INFO="${PATCHES_INFO}${patch_name}:${patch_filename}:${relative_path}\n"
 done
 
-REMOTE_OUTPUT=$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
+ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
   "REMOTE_PROJECT_DIR='${REMOTE_PROJECT_DIR}' \
    REMOTE_PATCH_DIR='${REMOTE_PATCH_DIR}' \
    BUNDLES_INFO='${BUNDLES_INFO}' \
@@ -616,9 +616,6 @@ fi
 rm -rf "$REMOTE_PATCH_DIR"
 log_success "Cleanup completed"
 EOF
-) || true
-
-echo "$REMOTE_OUTPUT"
 
 # --- 4. Transfer LFS files ---
 if [ ${#LFS_FILES_TO_TRANSFER[@]} -gt 0 ]; then
