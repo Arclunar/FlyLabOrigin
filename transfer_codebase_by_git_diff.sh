@@ -646,9 +646,47 @@ if [ ${#LFS_FILES_TO_TRANSFER[@]} -gt 0 ]; then
   log_success "LFS files transferred"
 fi
 
-# --- 5. Cleanup local patches ---
+# --- 5. Check and fix LFS pointer files on remote ---
 log ""
-log "5. Cleaning up local patches..."
+log "5. Checking for LFS pointer files on remote..."
+
+# Get list of all LFS pointer files on remote (focus on drone_racer where USD files are)
+REMOTE_LFS_POINTERS=$(ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" "cd '${REMOTE_PROJECT_DIR%/}/drone_racer' && git ls-files 2>/dev/null | while read -r file; do if [ -f \"\$file\" ]; then if git check-attr filter \"\$file\" 2>/dev/null | grep -q 'filter: lfs'; then if head -n 1 \"\$file\" 2>/dev/null | grep -q 'version https://git-lfs.github.com'; then echo \"drone_racer/\$file\"; fi; fi; fi; done")
+
+if [ -n "$REMOTE_LFS_POINTERS" ]; then
+  LFS_POINTER_COUNT=$(echo "$REMOTE_LFS_POINTERS" | wc -l)
+  log "Found ${LFS_POINTER_COUNT} LFS pointer file(s) on remote, transferring real content..."
+  
+  echo "$REMOTE_LFS_POINTERS" | while read -r remote_lfs_path; do
+    if [ -z "$remote_lfs_path" ]; then
+      continue
+    fi
+    
+    local_file="${LOCAL_PROJECT_DIR%/}/${remote_lfs_path}"
+    remote_file="${REMOTE_PROJECT_DIR%/}/${remote_lfs_path}"
+    
+    if [ -f "$local_file" ]; then
+      # Check if local file is real content (not a pointer)
+      if ! grep -q "version https://git-lfs.github.com" "$local_file" 2>/dev/null; then
+        log "  Fixing: ${remote_lfs_path}"
+        # Transfer the actual file
+        scp -i "$SSH_KEY_PATH" "$local_file" "${TARGET_SERVER}:${remote_file}" >/dev/null 2>&1
+      else
+        log_warning "  Local file is also a pointer, skipping: ${remote_lfs_path}"
+      fi
+    else
+      log_warning "  Local file not found: ${remote_lfs_path}"
+    fi
+  done
+  
+  log_success "LFS pointer files fixed"
+else
+  log "  No LFS pointer files found on remote"
+fi
+
+# --- 6. Cleanup local patches ---
+log ""
+log "6. Cleaning up local patches..."
 rm -rf "$PATCH_DIR"
 log_success "Local cleanup completed"
 

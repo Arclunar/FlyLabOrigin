@@ -151,6 +151,7 @@ sync_logs() {
   # --progress: show progress during transfer
   # --stats: show transfer statistics
   # NO --delete: keep local files even if deleted on remote
+  # --chmod=Du+w: ensure directories are writable by user
   
   log "Syncing from ${TARGET_SERVER}:${REMOTE_LOG_DIR}..."
   
@@ -159,9 +160,14 @@ sync_logs() {
     --update \
     --progress \
     --stats \
+    --chmod=Du+w \
     -e "ssh -i '$SSH_KEY_PATH'" \
     "$TARGET_SERVER:${REMOTE_LOG_DIR}/" \
     "$LOCAL_LOG_DIR/" 2>&1 | tee /tmp/rsync_output.txt; then
+    
+    # Fix permissions for any directories that might be owned by root
+    # This happens when docker volumes create files as root
+    find "$LOCAL_LOG_DIR" -type d ! -user "$(whoami)" -exec chmod u+w {} \; 2>/dev/null || true
     
     # Parse rsync stats to see if anything was transferred
     if grep -q "Number of files transferred: 0" /tmp/rsync_output.txt 2>/dev/null; then
