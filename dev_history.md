@@ -4,6 +4,158 @@
 
 **📝 日志规范：请将最新的修改记录添加在文件顶部（紧接本说明之后），保持新历史在上、旧历史在下的顺序。**
 
+**⚠️ 重要提醒：drone_racer 项目相关的详细开发历史已迁移到 `drone_racer/dev_history.md`，请查看该文件获取完整的技术细节和实现说明。本文件仅保留高层次的概述。**
+
+---
+
+## 2026-01-27: drone_racer 项目更新概述 ✅
+
+**详细内容请查看**: `drone_racer/dev_history.md`
+
+**主要更新**:
+1. **日志优化** - 添加编号前缀和北京时间支持
+2. **时间同步** - Docker 容器时间同步脚本
+3. **碰撞检测修复** - 从射线检测改为点查询算法（待测试）
+4. **速度惩罚分析** - 二值惩罚优于连续惩罚
+
+**修改文件**:
+- `drone_racer/scripts/rsl_rl/train.py`
+- `drone_racer/scripts/rsl_rl/cli_args.py`
+- `drone_racer/sync_time.sh`
+- `drone_racer/tasks/drone_racer/utils/warp_funcs.py`
+- `drone_racer/tasks/drone_racer/mdp/terminations.py`
+
+---
+
+### 1. 日志目录命名改进
+
+**问题**: 日志目录命名难以追踪实验顺序，且使用UTC时间不符合北京时间习惯。
+
+**解决方案**:
+- 在 `logs/rsl_rl/` 下创建带两位数编号前缀的实验目录
+- 使用北京时间（UTC+8）命名子目录
+
+**修改文件**:
+- `drone_racer/scripts/rsl_rl/train.py`
+- `drone_racer/scripts/rsl_rl/cli_args.py`
+
+**实现细节**:
+
+1. **train.py** - 添加编号和北京时间:
+```python
+from datetime import datetime, timezone, timedelta
+
+# 统计现有实验目录数量
+base_log_path = Path('~/server_logs/drone_racer/logs/rsl_rl').expanduser().absolute()
+experiment_number = len([d for d in base_log_path.iterdir() if d.is_dir()])
+
+# 创建带编号的实验目录
+numbered_experiment_name = f'{experiment_number + 1:02d}_{agent_cfg.experiment_name}'
+log_root_path = Path(base_log_path, numbered_experiment_name)
+
+# 使用北京时间创建子目录
+beijing_tz = timezone(timedelta(hours=8))
+log_dir = datetime.now(beijing_tz).strftime('%Y-%m-%d_%H-%M-%S')
+```
+
+2. **cli_args.py** - 修复 `--experiment` 参数:
+```python
+# 使用 --experiment 参数设置 experiment_name
+if args_cli.experiment_name is None and args_cli.experiment is not None:
+    agent_cfg.experiment_name = args_cli.experiment
+```
+
+**效果**:
+- 命令: `just train-uav-cnn --experiment noco_10hz_noconv_side01`
+- 目录结构: `01_noco_10hz_noconv_side01/2026-01-27_17-02-36/`
+- TensorBoard 可按编号自然排序查看实验
+
+### 2. Docker 时间同步脚本
+
+**问题**: Docker 容器时钟可能与主机不同步。
+
+**解决方案**: 创建 `drone_racer/sync_time.sh` 脚本
+
+```bash
+#!/bin/bash
+# Sync docker container time with NTP server
+ntpdate -u ntp.aliyun.com || ntpdate -u pool.ntp.org
+echo "Updated container time: $(date)"
+echo "Note: Logs will use Beijing Time (UTC+8) via Python timezone conversion"
+```
+
+**设计思路**:
+- 系统层面保持 UTC 时间（使用 ntpdate 同步）
+- Python 代码层面转换为北京时间（用于日志命名）
+
+### 3. Lattice 碰撞终止项
+
+**功能**: 添加基于晶格点检测的碰撞终止条件
+
+**修改文件**:
+- `drone_racer/tasks/drone_racer/mdp/terminations.py`
+- `drone_racer/tasks/drone_racer/uav_nav_env_cfg.py`
+
+**实现**:
+
+1. **terminations.py** - 新增函数:
+```python
+def lattice_collision(
+  env: ManagerBasedRLEnv,
+  collision_threshold: float = 0.0,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+) -> torch.Tensor:
+  """Terminate when lattice points detect collision with obstacles.
+  
+  Uses LatticeManager to detect if any lattice points on the drone mesh 
+  have entered obstacles.
+  """
+  from .observations import robot_lattice_collision_fraction
+  collision_fraction = robot_lattice_collision_fraction(env, asset_cfg=asset_cfg)
+  return collision_fraction > collision_threshold
+```
+
+2. **uav_nav_env_cfg.py** - 添加终止项:
+```python
+lattice_collision = DoneTerm(
+  func=mdp.lattice_collision,
+  params={'collision_threshold': 0.0},
+)
+```
+
+**特点**:
+- 基于无人机 STL 网格形状进行精确碰撞检测
+- 复用 LatticeManager，效率高
+- 支持可配置的容差阈值
+
+### 4. 速度惩罚函数对比分析
+
+**发现**: 连续惩罚 vs 二值惩罚的效果差异显著
+
+**对比**:
+
+| 函数 | velocity_limit_penalty | lin_vel_limit_violation |
+|------|----------------------|------------------------|
+| 类型 | 连续线性惩罚 | 二值惩罚（0或1） |
+| 公式 | `max(0, vel - 3.0)` | `(vel > 5.0).float()` |
+| 权重 | -0.5 | -100.0 |
+| 阈值 | 3.0 m/s | 5.0 m/s |
+
+**效果差异原因**:
+
+1. **连续惩罚问题**:
+   - 惩罚太弱: 3-5 m/s 最大惩罚仅 -1.0
+   - 持续干扰: 一直给予小惩罚，影响其他学习信号
+   - 梯度平缓: Agent 认为超速代价小，不值得改变
+
+2. **二值惩罚优势**:
+   - 信号清晰: 只有安全/危险两个状态
+   - 惩罚足够: -100 是强信号，Agent 会严格避免
+   - 不干扰正常行为: 5 m/s 以下完全无惩罚
+   - 阈值更合理: 5 m/s 给予更多探索空间
+
+**类比**: 红绿灯（二值：-100/0）vs 测速罚款（连续：每超速1km/h罚1元）
+
 ---
 
 ## 2026-01-26: 修改目标采样逻辑 - 目标在无人机前方指定角度范围内 ✅
