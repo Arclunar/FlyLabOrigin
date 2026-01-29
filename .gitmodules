@@ -1,7 +1,7 @@
 [submodule "drone_racer"]
 	path = drone_racer
 	url = git@github.com:WarriorHanamy/drone_racer.git
-	branch = rec/meshes
+	branch = zhw/obs_avo
 [submodule "IsaacLab"]
 	path = IsaacLab
 	url = git@github.com:WarriorHanamy/IsaacLab.git
