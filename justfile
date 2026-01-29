@@ -32,6 +32,7 @@ run-sim:
     -v {{project_root}}/.git:/workspace/.git \
     -v {{project_root}}/rsl_rl:/workspace/rsl_rl \
     -v {{project_root}}/drone_racer:/workspace/drone_racer \
+    -v {{project_root}}/drone_racer_mlp:/workspace/drone_racer_mlp \
     -v {{SERVER_LOGS_DIR}}:/root/server_logs:rw \
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
     {{env_var("USER")}}-lab2.3-sim5.1:{{TAG_NAME}}
@@ -72,10 +73,11 @@ run-sim-local:
     -v {{justfile_directory()}}/.git:/workspace/.git \
     -v {{justfile_directory()}}/rsl_rl:/workspace/rsl_rl \
     -v {{justfile_directory()}}/drone_racer:/workspace/drone_racer \
+    -v {{justfile_directory()}}/drone_racer_mlp:/workspace/drone_racer_mlp \
     -v {{SERVER_LOGS_DIR}}:/root/server_logs:rw \
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
     -v {{justfile_directory()}}/shared:/workspace/drone_racer/shared:rw \
-    -w /workspace/drone_racer \
+    -w /workspace \
     isaacsim5:latest
 
 exec-sim-local:
@@ -101,11 +103,11 @@ alias s := stop-sim
 
 # Upload local changes to remote server (uses git diff to sync)
 up:
-    ./transfer_codebase_by_git_diff.sh
+    ./scripts/transfer_codebase_by_git_diff.sh
 
 # Sync training logs from remote server to local
 sync-logs:
-    ./sync_server_logs.sh
+    ./scripts/sync_server_logs.sh
 
 # Create SSH tunnel for tensorboard (local_port remote_port server_ip)
 tb-local-tunnel local_port remote_port server_ip:

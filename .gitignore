@@ -38,6 +38,12 @@ docker/.container.cfg
 # used to configure VS Code settings
 !.vscode
 
+# Git worktrees (auto-generated directories)
+# Pattern: ignore any directory ending with worktree name patterns
+drone_racer_*/
+IsaacLab_*/
+rsl_rl_*/
+
 # Outputs
 **/output/*
 **/outputs/*
