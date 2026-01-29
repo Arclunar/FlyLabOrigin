@@ -32,7 +32,6 @@ run-sim:
     -v {{project_root}}/.git:/workspace/.git \
     -v {{project_root}}/rsl_rl:/workspace/rsl_rl \
     -v {{project_root}}/drone_racer:/workspace/drone_racer \
-    -v {{project_root}}/drone_racer_mlp:/workspace/drone_racer_mlp \
     -v {{SERVER_LOGS_DIR}}:/root/server_logs:rw \
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
     {{env_var("USER")}}-lab2.3-sim5.1:{{TAG_NAME}}
@@ -73,7 +72,6 @@ run-sim-local:
     -v {{justfile_directory()}}/.git:/workspace/.git \
     -v {{justfile_directory()}}/rsl_rl:/workspace/rsl_rl \
     -v {{justfile_directory()}}/drone_racer:/workspace/drone_racer \
-    -v {{justfile_directory()}}/drone_racer_mlp:/workspace/drone_racer_mlp \
     -v {{SERVER_LOGS_DIR}}:/root/server_logs:rw \
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
     -v {{justfile_directory()}}/shared:/workspace/drone_racer/shared:rw \
@@ -101,7 +99,13 @@ alias s := stop-sim
 # Remote Server Sync Commands
 # ======================================================================================
 
-# Upload local changes to remote server (uses git diff to sync)
+# Full transfer: Upload entire codebase to remote server (tar-based)
+# Environment variables: SERVER_IP, REMOTE_USER, LOCAL_PROJECT_DIR, REMOTE_PROJECT_DIR
+upall:
+    ./scripts/transfer_codebase.sh
+
+# Incremental transfer: Upload local changes to remote server (git diff-based)
+# Environment variables: SERVER_IP, REMOTE_USER, LOCAL_PROJECT_DIR, REMOTE_PROJECT_DIR
 up:
     ./scripts/transfer_codebase_by_git_diff.sh
 

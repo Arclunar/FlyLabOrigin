@@ -4,102 +4,121 @@
 # (Docker-related logic removed as per user request)
 #
 # ======================================================================================
-# CONFIGURATION (Environment Variables)
+# CONFIGURATION
 # ======================================================================================
 
-# Local Directory to sync (本地项目路径)
+# Remote Server Configuration
+SERVER_IP="${SERVER_IP:-14.103.52.172}"
+REMOTE_USER="${REMOTE_USER:-zhw}"
+
+# Local Project Directory
 LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$HOME/framework/server/}"
 
-# Remote Directory to sync to (远端存放路径)
-REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-$HOME/framework/server/}"
+# Remote Project Directory (注意：远端用户是 zhw，不是本地用户)
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/zhw/framework/server/}"
 
-# Local temporary directory root (本地临时目录)
-LOCAL_TMP_DIR="${LOCAL_TMP_DIR:-$HOME/Public/}"
-
-# SSH Key Configuration (SSH密钥配置)
+# SSH Key Configuration
 SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa.pub}"
+
+# Local temporary directory
+LOCAL_TMP_DIR="${LOCAL_TMP_DIR:-${TMPDIR:-/tmp/}}"
+
+# Construct target server
+TARGET_SERVER="${REMOTE_USER}@${SERVER_IP}"
 
 # ======================================================================================
 
 set -euo pipefail
 
+# ======================================================================================
+# ANSI Color Codes
+# ======================================================================================
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_YELLOW='\033[0;33m'
+COLOR_BLUE='\033[0;34m'
+COLOR_RESET='\033[0m'
+
+# ======================================================================================
+# Logging Functions
+# ======================================================================================
+
 log() {
-  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+  printf "${COLOR_BLUE}[%s]${COLOR_RESET} %s\n" "$(date '+%H:%M:%S')" "$*"
 }
 
-if [ "$#" -lt 1 ]; then
-  cat <<EOF
-Usage: $(basename "$0") <target-server>
+log_success() {
+  printf "${COLOR_GREEN}[%s] ✓ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
+}
 
-Arguments:
-  target-server    Remote server name (rec-server, wu, ali)
+log_error() {
+  printf "${COLOR_RED}[%s] ✗ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*" >&2
+}
 
-Environment Variables:
-  LOCAL_PROJECT_DIR    Local project path to sync
-                       Default: \$HOME/server/
-  REMOTE_PROJECT_DIR   Remote destination path
-                       Default: /data/nvme_data/rec_ws/server/
-  LOCAL_TMP_DIR        Local temporary directory root
-                       Default: \$HOME/Public/
-  SSH_KEY_PATH         SSH key path for authentication
-                       Default: \$HOME/.ssh/id_ed25519
+log_warning() {
+  printf "${COLOR_YELLOW}[%s] ⚠ %s${COLOR_RESET}\n" "$(date '+%H:%M:%S')" "$*"
+}
 
-Example:
-  $(basename "$0") rec-server
-  LOCAL_PROJECT_DIR=/custom/path $(basename "$0") rec-server
-EOF
-  exit 1
-fi
-
-TARGET_SERVER="$1"
-case "$TARGET_SERVER" in
-  rec-server|wu|ali)
-    ;;
-  *)
-    echo "Unsupported target server: $TARGET_SERVER" >&2
-    exit 1
-    ;;
-esac
+# ======================================================================================
+# Usage and Validation
+# ======================================================================================
 
 # Check if local directory exists
 if [ ! -d "$LOCAL_PROJECT_DIR" ]; then
-  echo "Error: Local directory not found: $LOCAL_PROJECT_DIR" >&2
+  log_error "Local directory not found: $LOCAL_PROJECT_DIR"
   exit 1
 fi
 
 # Check prerequisites
 for cmd in ssh scp tar; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "Error: Command '$cmd' is required but not found in PATH." >&2
+    log_error "Command '$cmd' is required but not found in PATH."
     exit 1
   fi
 done
 
+# ======================================================================================
+# Archive Preparation
+# ======================================================================================
+
 # Generate Archive names
-HOST_SLUG="$(echo "$TARGET_SERVER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 PROJECT_DIR_NAME="$(basename "$LOCAL_PROJECT_DIR")"
-PROJECT_ARCHIVE_NAME="project_${HOST_SLUG}_${TIMESTAMP}.tar"
+PROJECT_ARCHIVE_NAME="project_${TIMESTAMP}.tar"
 REMOTE_PROJECT_ARCHIVE_PATH="$(dirname "${REMOTE_PROJECT_DIR%/}")/${PROJECT_ARCHIVE_NAME}"
 
 # Prepare temporary space
-mkdir -p "$LOCAL_TMP_DIR"
-LOCAL_ARCHIVE_TMP_DIR="$(mktemp -d "${LOCAL_TMP_DIR%/}/deploy_XXXXXX")"
+LOCAL_TMP_DIR="${LOCAL_TMP_DIR%/}/"
+LOCAL_ARCHIVE_TMP_DIR="$(mktemp -d "${LOCAL_TMP_DIR}deploy_XXXXXX")"
 
 cleanup() {
+  local exit_code=$?
   if [ -d "$LOCAL_ARCHIVE_TMP_DIR" ]; then
     rm -rf "$LOCAL_ARCHIVE_TMP_DIR"
+  fi
+  
+  # If transfer was interrupted (non-zero exit), clean up remote archive
+  if [ $exit_code -ne 0 ]; then
+    log_warning "Transfer interrupted, cleaning up remote server..."
+    ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
+      "rm -f '$(dirname "${REMOTE_PROJECT_DIR%/}")/${PROJECT_ARCHIVE_NAME}' 2>/dev/null || true" || true
   fi
 }
 trap cleanup EXIT
 
 LOCAL_PROJECT_ARCHIVE_PATH="${LOCAL_ARCHIVE_TMP_DIR}/${PROJECT_ARCHIVE_NAME}"
 
+log ""
+log "=========================================="
+log "Transfer Codebase"
+log "=========================================="
+log ""
 log "Configuration:"
 log "  Local Path:      ${LOCAL_PROJECT_DIR}"
 log "  Remote Path:     ${REMOTE_PROJECT_DIR}"
 log "  Target Server:   ${TARGET_SERVER}"
-log "  SSH Key Path:    ${SSH_KEY_PATH}"
+log "  SSH Key:         ${SSH_KEY_PATH}"
+log ""
 
 # --- Confirmation Prompt (确认提示) ---
 echo ""
@@ -120,7 +139,7 @@ fi
 echo ""
 
 # --- 0. Remote Preparation (远端准备工作) ---
-log "0. Preparing remote server ${TARGET_SERVER}..."
+log "0. Preparing remote server..."
 ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
   "PROJECT_ARCHIVE='${PROJECT_ARCHIVE_NAME}' \
    REMOTE_PROJECT_DIR='${REMOTE_PROJECT_DIR}' \
@@ -137,22 +156,36 @@ if [ -d "${REMOTE_PROJECT_DIR%/}" ]; then
     echo "    [0.1] Removed existing remote directory: ${REMOTE_PROJECT_DIR%/}"
 fi
 
+# Clean up any stale project_*.tar archives (including incomplete transfers)
+find "$BASE_DIR" -maxdepth 1 -name "project_*.tar" -type f -mtime +0 -delete 2>/dev/null || true
+echo "    [0.1] Cleaned up old archive files"
+
 if [ -f "$PROJECT_ARCHIVE_PATH" ]; then
     rm -f "$PROJECT_ARCHIVE_PATH"
     echo "    [0.1] Removed stale archive: $PROJECT_ARCHIVE_PATH"
 fi
 EOF
+log_success "Remote server prepared"
 
 # --- 1. Package Local Project (打包本地项目) ---
-log "1. Packaging local project to ${LOCAL_PROJECT_ARCHIVE_PATH}..."
-tar -cf "$LOCAL_PROJECT_ARCHIVE_PATH" -C "$(dirname "$LOCAL_PROJECT_DIR")" "$PROJECT_DIR_NAME"
+log ""
+log "1. Packaging local project..."
+tar -cf "$LOCAL_PROJECT_ARCHIVE_PATH" -C "$(dirname "$LOCAL_PROJECT_DIR")" \
+  --exclude="${PROJECT_DIR_NAME}/shared" \
+  "$PROJECT_DIR_NAME"
+ARCHIVE_SIZE=$(du -h "$LOCAL_PROJECT_ARCHIVE_PATH" | cut -f1)
+log_success "Project packaged [${ARCHIVE_SIZE}] - excluding shared/"
 
 # --- 2. Transfer Archive (传输归档文件) ---
-log "2. Transferring project archive to ${TARGET_SERVER}..."
-scp -i "$SSH_KEY_PATH" "$LOCAL_PROJECT_ARCHIVE_PATH" "${TARGET_SERVER}:${REMOTE_PROJECT_ARCHIVE_PATH}"
+log ""
+log "2. Transferring archive to remote server..."
+echo "   Archive: ${ARCHIVE_SIZE}"
+rsync -avh --progress -e "ssh -i ${SSH_KEY_PATH}" "$LOCAL_PROJECT_ARCHIVE_PATH" "${TARGET_SERVER}:${REMOTE_PROJECT_ARCHIVE_PATH}"
+log_success "Archive transferred"
 
 # --- 3. Remote Deployment (远端部署) ---
-log "3. Extracting project on ${TARGET_SERVER}..."
+log ""
+log "3. Extracting and deploying on remote server..."
 ssh -i "$SSH_KEY_PATH" "$TARGET_SERVER" \
   "PROJECT_ARCHIVE='${PROJECT_ARCHIVE_NAME}' \
    PROJECT_DIR_NAME='${PROJECT_DIR_NAME}' \
@@ -182,5 +215,9 @@ fi
 rm -f "$PROJECT_ARCHIVE_PATH"
 echo "    [3.1] Project extracted to: ${REMOTE_PROJECT_DIR}"
 EOF
+log_success "Deployment completed"
 
-log "Deployment to ${TARGET_SERVER} completed successfully."
+log ""
+log_success "=========================================="
+log_success "Transfer completed successfully!"
+log_success "=========================================="
