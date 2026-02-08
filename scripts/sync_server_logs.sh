@@ -165,9 +165,11 @@ sync_logs() {
     "$TARGET_SERVER:${REMOTE_LOG_DIR}/" \
     "$LOCAL_LOG_DIR/" 2>&1 | tee /tmp/rsync_output.txt; then
     
-    # Fix permissions for any directories that might be owned by root
-    # This happens when docker volumes create files as root
-    find "$LOCAL_LOG_DIR" -type d ! -user "$(whoami)" -exec chmod u+w {} \; 2>/dev/null || true
+    # Fix permissions and ownership for synced files
+    # Change ownership to current user and make directories writable
+    log "Fixing file permissions and ownership..."
+    find "$LOCAL_LOG_DIR" -type d -exec chmod u+w {} \; 2>/dev/null || true
+    find "$LOCAL_LOG_DIR" ! -user "$(whoami)" -exec sudo chown -R "$(whoami):$(whoami)" {} \; 2>/dev/null || true
     
     # Parse rsync stats to see if anything was transferred
     if grep -q "Number of files transferred: 0" /tmp/rsync_output.txt 2>/dev/null; then
