@@ -49,7 +49,7 @@ start:
 build-sim-local:
     docker build -f docker/isaacsim5_ros2.dockerfile \
     --network=host \
-    -t isaacsim5:latest .
+    -t isaac-lab2.3-sim5.1:latest .
 
 run-sim-local:
     docker run --name isaac-lab2.3-sim5.1 -it --privileged --gpus all --network host \
@@ -76,7 +76,7 @@ run-sim-local:
     -v {{SERVER_LOGS_DIR}}/outputs:/workspace/drone_racer/outputs:rw \
     -v {{justfile_directory()}}/shared:/workspace/drone_racer/shared:rw \
     -w /workspace \
-    isaacsim5:latest
+    isaac-lab2.3-sim5.1:latest
 
 exec-sim-local:
     docker exec -it isaac-lab2.3-sim5.1 /bin/bash

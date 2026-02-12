@@ -1,6 +1,6 @@
 [submodule "drone_racer"]
 	path = drone_racer
-	url = https://github.com/WarriorHanamy/drone_racer.git
+	url = https://github.com/Arclunar/drone_racer_deprecated.git
 	branch = zhw/obs_avo
 [submodule "IsaacLab"]
 	path = IsaacLab
